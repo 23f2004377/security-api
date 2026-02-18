@@ -29,78 +29,80 @@ app.get("/", (req, res) => {
 });
 
 // =================================
-// RATE LIMIT CONFIG
+// RATE LIMITING (CORRECT LOGIC)
 // =================================
 const PORT = process.env.PORT || 3000;
-const RATE_PER_MIN = 31;
-const BURST = 10;
-const REFILL_PER_MS = RATE_PER_MIN / 60000;
 
-const buckets = new Map();
+const rateStore = new Map();
 
-// =================================
-// HELPERS
-// =================================
-function getKey(req) {
-  return (req.body && req.body.userId) || req.ip;
-}
+const MAX_PER_MINUTE = 31;
+const MAX_BURST = 10;
+const MINUTE_WINDOW = 60 * 1000;
+const BURST_WINDOW = 1000;
 
-function getBucket(key) {
-  if (!buckets.has(key)) {
-    buckets.set(key, {
-      tokens: BURST,
-      lastRefill: Date.now()
-    });
-  }
-  return buckets.get(key);
-}
-
-function refill(bucket) {
-  const now = Date.now();
-  const elapsed = now - bucket.lastRefill;
-  const refillAmount = elapsed * REFILL_PER_MS;
-
-  bucket.tokens = Math.min(BURST, bucket.tokens + refillAmount);
-  bucket.lastRefill = now;
-}
-
-// =================================
-// RATE LIMIT MIDDLEWARE
-// =================================
 function rateLimit(req, res, next) {
   try {
-    const key = getKey(req);
-    const bucket = getBucket(key);
+    const key = (req.body && req.body.userId) || req.ip;
+    const now = Date.now();
 
-    refill(bucket);
+    if (!rateStore.has(key)) {
+      rateStore.set(key, []);
+    }
 
-    if (bucket.tokens < 1) {
-      const waitSeconds = Math.ceil(
-        (1 - bucket.tokens) / REFILL_PER_MS / 1000
-      );
+    const timestamps = rateStore.get(key);
+
+    // remove old timestamps
+    const lastMinute = timestamps.filter(t => now - t < MINUTE_WINDOW);
+    const lastSecond = lastMinute.filter(t => now - t < BURST_WINDOW);
+
+    // minute limit
+    if (lastMinute.length >= MAX_PER_MINUTE) {
+      const retry = Math.ceil((MINUTE_WINDOW - (now - lastMinute[0])) / 1000);
 
       console.log("SECURITY EVENT:", {
-        type: "RATE_LIMIT_BLOCK",
+        type: "RATE_LIMIT_BLOCK_MINUTE",
         key,
         time: new Date().toISOString()
       });
 
-      return res
-        .status(429)
-        .set("Retry-After", waitSeconds)
+      return res.status(429)
+        .set("Retry-After", retry)
         .json({
           blocked: true,
-          reason: "Rate limit exceeded",
+          reason: "Rate limit exceeded (per minute)",
           sanitizedOutput: null,
           confidence: 0.99
         });
     }
 
-    bucket.tokens -= 1;
+    // burst limit
+    if (lastSecond.length >= MAX_BURST) {
+      const retry = Math.ceil((BURST_WINDOW - (now - lastSecond[0])) / 1000);
+
+      console.log("SECURITY EVENT:", {
+        type: "RATE_LIMIT_BLOCK_BURST",
+        key,
+        time: new Date().toISOString()
+      });
+
+      return res.status(429)
+        .set("Retry-After", retry)
+        .json({
+          blocked: true,
+          reason: "Rate limit exceeded (burst)",
+          sanitizedOutput: null,
+          confidence: 0.99
+        });
+    }
+
+    // record request
+    lastMinute.push(now);
+    rateStore.set(key, lastMinute);
+
     next();
+
   } catch (err) {
     console.error("Validation error:", err);
-
     return res.status(400).json({
       blocked: true,
       reason: "Validation error",
@@ -126,7 +128,6 @@ app.post("/security", rateLimit, (req, res) => {
       });
     }
 
-    // basic output sanitization
     const sanitized = String(input).replace(
       /<script.*?>.*?<\/script>/gi,
       ""
@@ -141,7 +142,6 @@ app.post("/security", rateLimit, (req, res) => {
 
   } catch (err) {
     console.error("Processing error:", err);
-
     return res.status(400).json({
       blocked: true,
       reason: "Processing error",
