@@ -3,9 +3,9 @@ const app = express();
 
 app.use(express.json());
 
-// =============================
-// CORS SUPPORT (grader safe)
-// =============================
+// =================================
+// CORS SUPPORT
+// =================================
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
@@ -13,29 +13,34 @@ app.use((req, res, next) => {
   next();
 });
 
-app.options("*", (req, res) => res.sendStatus(200));
+// EXPRESS v5 SAFE OPTIONS HANDLER
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
-// =============================
-// HEALTH CHECK ROUTE
-// =============================
+// =================================
+// HEALTH CHECK
+// =================================
 app.get("/", (req, res) => {
   res.status(200).send("Service running");
 });
 
-// =============================
+// =================================
 // RATE LIMIT CONFIG
-// =============================
+// =================================
 const PORT = process.env.PORT || 3000;
-
 const RATE_PER_MIN = 31;
 const BURST = 10;
 const REFILL_PER_MS = RATE_PER_MIN / 60000;
 
 const buckets = new Map();
 
-// =============================
+// =================================
 // HELPERS
-// =============================
+// =================================
 function getKey(req) {
   return (req.body && req.body.userId) || req.ip;
 }
@@ -59,9 +64,9 @@ function refill(bucket) {
   bucket.lastRefill = now;
 }
 
-// =============================
+// =================================
 // RATE LIMIT MIDDLEWARE
-// =============================
+// =================================
 function rateLimit(req, res, next) {
   try {
     const key = getKey(req);
@@ -105,9 +110,9 @@ function rateLimit(req, res, next) {
   }
 }
 
-// =============================
+// =================================
 // SECURITY ENDPOINT
-// =============================
+// =================================
 app.post("/security", rateLimit, (req, res) => {
   try {
     const { userId, input, category } = req.body || {};
@@ -121,7 +126,7 @@ app.post("/security", rateLimit, (req, res) => {
       });
     }
 
-    // simple output sanitization
+    // basic output sanitization
     const sanitized = String(input).replace(
       /<script.*?>.*?<\/script>/gi,
       ""
@@ -146,9 +151,9 @@ app.post("/security", rateLimit, (req, res) => {
   }
 });
 
-// =============================
+// =================================
 // START SERVER
-// =============================
+// =================================
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
